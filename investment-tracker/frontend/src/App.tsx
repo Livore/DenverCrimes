@@ -67,7 +67,7 @@ export default function App() {
 
         <div style={{ padding: '16px 20px', borderTop: '1px solid #2a2d3a' }}>
           <div style={{ fontSize: 11, color: '#3a3d4a', lineHeight: 1.5 }}>
-            Powered by Claude claude-opus-4-7<br />
+            Powered by Gemini 2.0 Flash<br />
             MPT · Fama-French · Factor Investing
           </div>
         </div>

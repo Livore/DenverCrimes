@@ -1,12 +1,11 @@
-import anthropic
+import google.generativeai as genai
 import json
-import numpy as np
-from typing import Optional
+import os
 from sqlalchemy.orm import Session
 from database import Transaction
 from services.price_service import get_asset_price
 
-client = anthropic.Anthropic()
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 
 INVESTMENT_SYSTEM_PROMPT = """Sei un agente di analisi finanziaria esperto con una profonda conoscenza delle strategie di investimento accademiche e dei mercati finanziari. Hai studiato e assimilato i seguenti lavori accademici fondamentali:
 
@@ -86,6 +85,55 @@ Quando l'utente ti chiede analisi o suggerimenti:
 
 Rispondi SEMPRE in italiano. Usa dati concreti e formule quando rilevante. Sii diretto e pratico."""
 
+TOOL_DECLARATIONS = [
+    {
+        "name": "get_portfolio_summary",
+        "description": "Ottieni il riepilogo completo del portafoglio: holdings, valori correnti, P&L, pesi percentuali. Usalo quando devi analizzare la composizione del portafoglio.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_allocation_by_type",
+        "description": "Ottieni l'allocazione del portafoglio per tipo di asset (azioni, ETF, crypto) e per singolo asset. Utile per valutare la diversificazione.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "compute_risk_metrics",
+        "description": "Calcola le metriche di rischio: concentrazione (HHI), numero effettivo di asset, e valutazione della diversificazione secondo la Modern Portfolio Theory.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_top_performers",
+        "description": "Ottieni gli asset con la migliore e peggiore performance in termini di P&L percentuale.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "top_n": {
+                    "type": "integer",
+                    "description": "Numero di asset da mostrare per categoria (default 3)",
+                }
+            },
+        },
+    },
+]
+
+
+def _get_model():
+    return genai.GenerativeModel(
+        model_name="gemini-2.0-flash",
+        system_instruction=INVESTMENT_SYSTEM_PROMPT,
+        tools=[{"function_declarations": TOOL_DECLARATIONS}],
+    )
+
+
+def _format_history(conversation_history: list[dict]) -> list:
+    formatted = []
+    for msg in conversation_history:
+        if not isinstance(msg.get("content"), str):
+            continue
+        role = "user" if msg["role"] == "user" else "model"
+        formatted.append({"role": role, "parts": [{"text": msg["content"]}]})
+    return formatted
+
 
 def compute_portfolio_metrics(transactions: list[Transaction], prices: dict[str, float]) -> dict:
     holdings: dict[str, dict] = {}
@@ -146,52 +194,6 @@ def compute_portfolio_metrics(transactions: list[Transaction], prices: dict[str,
         "total_pnl": total_pnl,
         "total_pnl_pct": total_pnl_pct,
     }
-
-
-def get_portfolio_tools():
-    return [
-        {
-            "name": "get_portfolio_summary",
-            "description": "Ottieni il riepilogo completo del portafoglio: holdings, valori correnti, P&L, pesi percentuali. Usalo quando devi analizzare la composizione del portafoglio.",
-            "input_schema": {
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        },
-        {
-            "name": "get_allocation_by_type",
-            "description": "Ottieni l'allocazione del portafoglio per tipo di asset (azioni, ETF, crypto) e per singolo asset. Utile per valutare la diversificazione.",
-            "input_schema": {
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        },
-        {
-            "name": "compute_risk_metrics",
-            "description": "Calcola le metriche di rischio: concentrazione (HHI), numero effettivo di asset, e valutazione della diversificazione secondo la Modern Portfolio Theory.",
-            "input_schema": {
-                "type": "object",
-                "properties": {},
-                "required": [],
-            },
-        },
-        {
-            "name": "get_top_performers",
-            "description": "Ottieni gli asset con la migliore e peggiore performance in termini di P&L percentuale.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "top_n": {
-                        "type": "integer",
-                        "description": "Numero di asset da mostrare per categoria (default 3)",
-                    }
-                },
-                "required": [],
-            },
-        },
-    ]
 
 
 def execute_tool(tool_name: str, tool_input: dict, db: Session) -> str:
@@ -287,47 +289,35 @@ def execute_tool(tool_name: str, tool_input: dict, db: Session) -> str:
 
 
 def chat_with_agent(message: str, conversation_history: list[dict], db: Session) -> str:
-    messages = conversation_history + [{"role": "user", "content": message}]
-    tools = get_portfolio_tools()
+    model = _get_model()
+    history = _format_history(conversation_history)
+    chat = model.start_chat(history=history)
 
-    response = client.messages.create(
-        model="claude-opus-4-7",
-        max_tokens=4096,
-        thinking={"type": "adaptive"},
-        system=INVESTMENT_SYSTEM_PROMPT,
-        tools=tools,
-        messages=messages,
-    )
+    response = chat.send_message(message)
 
-    while response.stop_reason == "tool_use":
-        tool_results = []
-        assistant_content = response.content
+    for _ in range(10):
+        fc_parts = [p for p in response.parts if p.function_call and p.function_call.name]
+        if not fc_parts:
+            break
 
-        for block in response.content:
-            if block.type == "tool_use":
-                result = execute_tool(block.name, block.input, db)
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": result,
-                })
+        result_parts = []
+        for part in fc_parts:
+            fc = part.function_call
+            tool_args = dict(fc.args) if fc.args else {}
+            tool_result = execute_tool(fc.name, tool_args, db)
+            result_parts.append(
+                genai.protos.Part(
+                    function_response=genai.protos.FunctionResponse(
+                        name=fc.name,
+                        response={"result": json.loads(tool_result)},
+                    )
+                )
+            )
 
-        messages = messages + [
-            {"role": "assistant", "content": assistant_content},
-            {"role": "user", "content": tool_results},
-        ]
+        response = chat.send_message(result_parts)
 
-        response = client.messages.create(
-            model="claude-opus-4-7",
-            max_tokens=4096,
-            thinking={"type": "adaptive"},
-            system=INVESTMENT_SYSTEM_PROMPT,
-            tools=tools,
-            messages=messages,
-        )
-
-    text_blocks = [b.text for b in response.content if hasattr(b, "text")]
-    return "\n".join(text_blocks)
+    text_parts = [p.text for p in response.parts if hasattr(p, "text") and p.text]
+    return "\n".join(text_parts)
 
 
 def generate_portfolio_report(db: Session) -> str:

@@ -6,9 +6,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Check for .env
 if [ ! -f "$SCRIPT_DIR/.env" ]; then
-    if [ -z "$ANTHROPIC_API_KEY" ]; then
-        echo "ERROR: ANTHROPIC_API_KEY not set."
-        echo "Create a .env file from .env.example and add your Anthropic API key."
+    if [ -z "$GEMINI_API_KEY" ]; then
+        echo "ERROR: GEMINI_API_KEY not set."
+        echo "Create a .env file from .env.example and add your Gemini API key."
         exit 1
     fi
 fi
