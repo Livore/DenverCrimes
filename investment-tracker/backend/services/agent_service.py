@@ -1,8 +1,7 @@
 import google.generativeai as genai
 import json
 import os
-from sqlalchemy.orm import Session
-from database import Transaction
+from database import get_all_transactions, Transaction
 from services.price_service import get_asset_price
 
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
@@ -196,8 +195,8 @@ def compute_portfolio_metrics(transactions: list[Transaction], prices: dict[str,
     }
 
 
-def execute_tool(tool_name: str, tool_input: dict, db: Session) -> str:
-    transactions = db.query(Transaction).all()
+def execute_tool(tool_name: str, tool_input: dict) -> str:
+    transactions = get_all_transactions()
     prices = {}
     for tx in transactions:
         if tx.ticker not in prices:
@@ -288,7 +287,7 @@ def execute_tool(tool_name: str, tool_input: dict, db: Session) -> str:
     return json.dumps({"error": f"Tool {tool_name} non trovato"})
 
 
-def chat_with_agent(message: str, conversation_history: list[dict], db: Session) -> str:
+def chat_with_agent(message: str, conversation_history: list[dict]) -> str:
     model = _get_model()
     history = _format_history(conversation_history)
     chat = model.start_chat(history=history)
@@ -304,7 +303,7 @@ def chat_with_agent(message: str, conversation_history: list[dict], db: Session)
         for part in fc_parts:
             fc = part.function_call
             tool_args = dict(fc.args) if fc.args else {}
-            tool_result = execute_tool(fc.name, tool_args, db)
+            tool_result = execute_tool(fc.name, tool_args)
             result_parts.append(
                 genai.protos.Part(
                     function_response=genai.protos.FunctionResponse(
@@ -320,7 +319,7 @@ def chat_with_agent(message: str, conversation_history: list[dict], db: Session)
     return "\n".join(text_parts)
 
 
-def generate_portfolio_report(db: Session) -> str:
+def generate_portfolio_report() -> str:
     report_prompt = """Genera un report completo del portafoglio investimenti. Il report deve includere:
 
 1. **Executive Summary**: stato attuale del portafoglio, performance totale
@@ -337,4 +336,4 @@ def generate_portfolio_report(db: Session) -> str:
 
 Sii specifico, usa i dati reali del portafoglio e cita le teorie di riferimento."""
 
-    return chat_with_agent(report_prompt, [], db)
+    return chat_with_agent(report_prompt, [])

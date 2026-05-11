@@ -1,7 +1,9 @@
 /target/
-.DS_Storeinvestment-tracker/backend/__pycache__/
+.DS_Store
+investment-tracker/backend/__pycache__/
 investment-tracker/backend/routers/__pycache__/
 investment-tracker/backend/services/__pycache__/
 investment-tracker/backend/investments.db
 investment-tracker/frontend/node_modules/
 investment-tracker/.env
+investment-tracker/backend/firebase-credentials.json

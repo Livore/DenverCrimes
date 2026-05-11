@@ -1,46 +1,74 @@
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+import os
+import json
+import firebase_admin
+from firebase_admin import credentials, firestore as fb_firestore
+from dataclasses import dataclass
+from typing import Optional
 from datetime import datetime
 
-SQLALCHEMY_DATABASE_URL = "sqlite:///./investments.db"
 
-engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-
-class Transaction(Base):
-    __tablename__ = "transactions"
-
-    id = Column(Integer, primary_key=True, index=True)
-    asset_type = Column(String, nullable=False)  # "stock", "etf", "crypto"
-    ticker = Column(String, nullable=False)
-    name = Column(String, nullable=False)
-    quantity = Column(Float, nullable=False)
-    price = Column(Float, nullable=False)
-    total_value = Column(Float, nullable=False)
-    transaction_type = Column(String, nullable=False)  # "buy", "sell"
-    date = Column(DateTime, default=datetime.utcnow)
-    notes = Column(Text, nullable=True)
+def _init_firebase():
+    if firebase_admin._apps:
+        return
+    creds_json_str = os.environ.get("FIREBASE_CREDENTIALS_JSON")
+    creds_path = os.environ.get("FIREBASE_CREDENTIALS_PATH", "firebase-credentials.json")
+    if creds_json_str:
+        cred = credentials.Certificate(json.loads(creds_json_str))
+    elif os.path.exists(creds_path):
+        cred = credentials.Certificate(creds_path)
+    else:
+        raise RuntimeError(
+            "Firebase non configurato. Imposta FIREBASE_CREDENTIALS_JSON "
+            "o FIREBASE_CREDENTIALS_PATH nel file .env"
+        )
+    firebase_admin.initialize_app(cred)
 
 
-class Report(Base):
-    __tablename__ = "reports"
-
-    id = Column(Integer, primary_key=True, index=True)
-    content = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    report_type = Column(String, default="weekly")
+_init_firebase()
+db = fb_firestore.client()
 
 
-def create_tables():
-    Base.metadata.create_all(bind=engine)
+@dataclass
+class Transaction:
+    id: str
+    asset_type: str
+    ticker: str
+    name: str
+    quantity: float
+    price: float
+    total_value: float
+    transaction_type: str
+    date: datetime
+    notes: Optional[str] = None
 
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+@dataclass
+class Report:
+    id: str
+    content: str
+    created_at: datetime
+    report_type: str = "weekly"
+
+
+def doc_to_transaction(doc) -> Transaction:
+    data = doc.to_dict()
+    date = data.get("date")
+    if not isinstance(date, datetime):
+        date = datetime.now()
+    return Transaction(
+        id=doc.id,
+        asset_type=data.get("asset_type", ""),
+        ticker=data.get("ticker", ""),
+        name=data.get("name", ""),
+        quantity=float(data.get("quantity", 0)),
+        price=float(data.get("price", 0)),
+        total_value=float(data.get("total_value", 0)),
+        transaction_type=data.get("transaction_type", "buy"),
+        date=date,
+        notes=data.get("notes"),
+    )
+
+
+def get_all_transactions() -> list[Transaction]:
+    docs = db.collection("transactions").order_by("date", direction="DESCENDING").get()
+    return [doc_to_transaction(d) for d in docs]

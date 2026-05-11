@@ -21,7 +21,7 @@ export interface PortfolioSummary {
 }
 
 export interface Transaction {
-  id: number
+  id: string
   asset_type: string
   ticker: string
   name: string

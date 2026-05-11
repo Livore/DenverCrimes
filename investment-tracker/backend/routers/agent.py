@@ -1,10 +1,9 @@
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-from database import get_db, Report
-from services.agent_service import chat_with_agent, generate_portfolio_report
 from datetime import datetime
+from database import db
+from services.agent_service import chat_with_agent, generate_portfolio_report
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -15,30 +14,33 @@ class ChatMessage(BaseModel):
 
 
 @router.post("/chat")
-def chat(payload: ChatMessage, db: Session = Depends(get_db)):
-    response = chat_with_agent(payload.message, payload.history or [], db)
+def chat(payload: ChatMessage):
+    response = chat_with_agent(payload.message, payload.history or [])
     return {"response": response}
 
 
 @router.post("/report")
-def generate_report(db: Session = Depends(get_db)):
-    content = generate_portfolio_report(db)
-    report = Report(content=content, report_type="manual", created_at=datetime.utcnow())
-    db.add(report)
-    db.commit()
-    db.refresh(report)
-    return {"id": report.id, "content": content, "created_at": report.created_at.isoformat()}
+def generate_report():
+    content = generate_portfolio_report()
+    _, doc_ref = db.collection("reports").add({
+        "content": content,
+        "report_type": "manual",
+        "created_at": datetime.utcnow(),
+    })
+    return {"id": doc_ref.id, "content": content, "created_at": datetime.utcnow().isoformat()}
 
 
 @router.get("/reports")
-def list_reports(db: Session = Depends(get_db)):
-    reports = db.query(Report).order_by(Report.created_at.desc()).limit(10).all()
-    return [
-        {
-            "id": r.id,
-            "content": r.content,
-            "report_type": r.report_type,
-            "created_at": r.created_at.isoformat(),
-        }
-        for r in reports
-    ]
+def list_reports():
+    docs = db.collection("reports").order_by("created_at", direction="DESCENDING").limit(10).get()
+    result = []
+    for doc in docs:
+        data = doc.to_dict()
+        created_at = data.get("created_at")
+        result.append({
+            "id": doc.id,
+            "content": data.get("content", ""),
+            "report_type": data.get("report_type", "manual"),
+            "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
+        })
+    return result
